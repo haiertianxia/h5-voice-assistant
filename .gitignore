@@ -1,0 +1,21 @@
+# Environment — never commit real keys
+.env
+
+# Dependencies
+node_modules/
+
+# Temp audio files (served from /uploads but not tracked)
+server/uploads/*.mp3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Certs — generate your own in server/certs/
+server/certs/*.key
+server/certs/*.crt
+server/certs/*.csr
+server/certs/*.srl

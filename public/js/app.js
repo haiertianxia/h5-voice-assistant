@@ -1,13 +1,13 @@
 import { AudioRecorder } from './recorder.js';
-import { AudioPlayer } from './player.js';
+import { AudioPlayer }  from './player.js';
 import { UIController } from './ui.js';
 
 class VoiceAssistant {
   constructor() {
     this.recorder = new AudioRecorder(document.getElementById('waveformCanvas'));
-    this.player = new AudioPlayer(document.getElementById('audioPlayer'));
-    this.ui = new UIController(this);
-    this.state = 'idle';
+    this.player   = new AudioPlayer(document.getElementById('audioPlayer'));
+    this.ui       = new UIController(this);
+    this.state    = 'idle';
     this.settings = this._loadSettings();
     this.applySettings();
     this._bindEvents();
@@ -61,34 +61,55 @@ class VoiceAssistant {
       if (this.state === 'recording') this._cancelRecording();
     };
 
-    orb.addEventListener('mousedown', startRecord);
-    orb.addEventListener('mouseup', endRecord);
+    orb.addEventListener('mousedown',  startRecord);
+    orb.addEventListener('mouseup',    endRecord);
     orb.addEventListener('mouseleave', cancelRecord);
     orb.addEventListener('touchstart', startRecord, { passive: false });
-    orb.addEventListener('touchend', endRecord, { passive: false });
+    orb.addEventListener('touchend',   endRecord,   { passive: false });
     orb.addEventListener('touchcancel', cancelRecord);
+
+    // Retry permission button
+    document.getElementById('retryPermBtn')?.addEventListener('click', () => {
+      this._startRecording();
+    });
   }
 
   async _startRecording() {
-    try {
-      this.recorder.start();
-      this.state = 'recording';
-      this.ui.setRecording(true);
-      this.ui.setHint('正在听... 请说话');
-    } catch (err) {
-      this.ui.showToast('请允许麦克风权限', 'error');
-      document.getElementById('permissionHint').style.display = 'block';
+    // Request permission if we don't have a stream yet
+    if (!this.recorder.stream) {
+      const granted = await this.recorder.requestPermission();
+      if (!granted) {
+        this.ui.showToast('请允许麦克风权限', 'error');
+        document.getElementById('permissionHint').style.display = 'flex';
+        return;
+      }
+      document.getElementById('permissionHint').style.display = 'none';
     }
+
+    const ok = this.recorder.start();
+    if (!ok) {
+      this.ui.showToast('录音初始化失败，请刷新重试', 'error');
+      return;
+    }
+
+    this.state = 'recording';
+    this.ui.setRecording(true);
+    this.ui.setHint('正在听... 请说话');
+
+    // Silence detection — stop after 3s quiet
+    this.recorder.onSilence = () => this._stopRecording();
   }
 
   async _stopRecording() {
     if (this.state !== 'recording') return;
     this.state = 'processing';
-    this.recorder.stop();
+    this.recorder.onSilence = null;
+
     this.ui.setRecording(false);
     this.ui.setProcessing(true);
     this.ui.setHint('识别中...');
 
+    // stop() is now async — await it
     const blob = await this.recorder.stop();
 
     if (!blob || blob.size < 500) {
@@ -96,7 +117,6 @@ class VoiceAssistant {
       return;
     }
 
-    // Send to server STT
     const text = await this._serverSTT(blob);
 
     if (!text || text.trim().length === 0) {
@@ -128,7 +148,7 @@ class VoiceAssistant {
     try {
       const formData = new FormData();
       formData.append('audio', blob, 'recording.webm');
-      const res = await fetch('/api/stt', { method: 'POST', body: formData });
+      const res  = await fetch('/api/stt', { method: 'POST', body: formData });
       if (!res.ok) return null;
       const data = await res.json();
       return data.text;
@@ -140,14 +160,23 @@ class VoiceAssistant {
   async _chat(text) {
     try {
       const r = await fetch('/api/chat', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voiceSpeed: (this.settings.speed ?? 100) / 100 }),
+        body:    JSON.stringify({
+          text,
+          voiceSpeed: (this.settings.speed ?? 100) / 100,
+        }),
       });
-      if (!r.ok) throw new Error('API error');
+
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ error: 'API error' }));
+        throw new Error(err.error || 'API error');
+      }
+
       const d = await r.json();
       await this._showAIReply(d.reply, d.audioUrl);
-    } catch {
+    } catch (err) {
+      console.error('[_chat]', err);
       await this._showAIReply('抱歉，服务暂时不可用，请检查网络后重试。', null);
     }
   }
@@ -155,10 +184,10 @@ class VoiceAssistant {
   async _showAIReply(text, audioUrl) {
     this.state = 'idle';
     this.ui.setProcessing(false);
-    this.ui.setHint('长按说话，松开发送');
+    this.ui.setHint('长按说话，松发送');
 
     const msgId = this.ui.addMessage('ai', '');
-    const p = document.querySelector('[data-msg-id="' + msgId + '"] .message-content p');
+    const p     = document.querySelector(`[data-msg-id="${msgId}"] .message-content p`);
     await this._typewriter(p, text);
 
     if (!this.settings.muted) {
