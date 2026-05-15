@@ -1,7 +1,15 @@
+import { BrowserSTT } from './stt.js';
+
+/**
+ * AudioRecorder — handles microphone capture + Web Speech API recognition.
+ *
+ * Priority: Web Speech API (real-time, no server needed)
+ * Fallback:  MediaRecorder → server /api/stt
+ */
 export class AudioRecorder {
   constructor(canvasEl) {
-    this.canvas       = canvasEl;
-    this.ctx          = canvasEl.getContext('2d');
+    this.canvas        = canvasEl;
+    this.ctx           = canvasEl.getContext('2d');
     this.mediaRecorder = null;
     this.audioContext  = null;
     this.analyser      = null;
@@ -12,9 +20,20 @@ export class AudioRecorder {
     this.maxDurTimer   = null;
     this.onSilence     = null;
     this.animationId   = null;
+
+    // Speech recognition
+    this._browserSTT  = new BrowserSTT();
+    this._srInterim  = '';
+    this._srFinal    = '';
+    this._srOnInterim = null; // callback for interim transcript
+    this._srOnFinal   = null; // callback for final transcript
+    this._srActive    = false;
+
     this._resizeCanvas();
     window.addEventListener('resize', () => this._resizeCanvas());
   }
+
+  get supportsBrowserSTT() { return this._browserSTT.available; }
 
   _resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -24,10 +43,8 @@ export class AudioRecorder {
     this.ctx.scale(dpr, dpr);
   }
 
-  /**
-   * Request microphone permission.
-   * @returns {Promise<boolean>}
-   */
+  // ── Microphone permission ──────────────────────────────────────────
+
   async requestPermission() {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -37,13 +54,67 @@ export class AudioRecorder {
     }
   }
 
-  /**
-   * Start recording. Caller must have called requestPermission() first
-   * and verified the stream is available.
-   */
-  start() {
-    if (!this.stream) return false;
+  // ── Start recording ───────────────────────────────────────────────
 
+  /**
+   * @param {object} opts
+   * @param {function(string)} opts.onInterim  — real-time transcript
+   * @param {function(string)} opts.onFinal    — final transcript
+   * @param {function(string)} opts.onError    — error message
+   */
+  start({ onInterim, onFinal, onError } = {}) {
+    this._srInterim = '';
+    this._srFinal   = '';
+    this._srOnInterim = onInterim;
+    this._srOnFinal   = onFinal;
+
+    // Try Web Speech API first
+    if (this._browserSTT.available) {
+      this._srActive = true;
+      this._browserSTT.start({
+        onInterim: text => {
+          this._srInterim = text;
+          onInterim?.(this._srFinal + text);
+        },
+        onFinal: text => {
+          this._srFinal += text;
+          onFinal?.(this._srFinal.trim());
+          this._srActive = false;
+        },
+        onError: err => {
+          console.warn('[Recorder] Web Speech error:', err);
+          this._srActive = false;
+          // Fall back to MediaRecorder if SR fails
+          if (err === 'no-speech' || err === 'not-allowed') {
+            onError?.(err);
+          }
+        },
+      });
+    }
+
+    // Also start MediaRecorder as backup (or for audio capture)
+    if (this.stream) {
+      this._startMediaRecorder();
+    } else {
+      // No mic stream — Web Speech-only mode
+    }
+
+    this.isRecording = true;
+    this._startWaveform();
+    this._resetSilenceTimer();
+
+    this.maxDurTimer = setTimeout(() => {
+      if (this.isRecording) {
+        console.warn('[Recorder] Max duration — stopping');
+        this.onSilence?.();
+      }
+    }, 60_000);
+
+    return true;
+  }
+
+  _startMediaRecorder() {
+    if (!this.stream) return;
     this.chunks = [];
     this.audioContext = new AudioContext();
     const source = this.audioContext.createMediaStreamSource(this.stream);
@@ -62,41 +133,33 @@ export class AudioRecorder {
     };
 
     this.mediaRecorder.start(100);
-    this.isRecording = true;
-    this._startWaveform();
-    this._resetSilenceTimer();
-
-    // Max recording duration: 60 seconds (per spec)
-    this.maxDurTimer = setTimeout(() => {
-      if (this.isRecording) {
-        console.warn('[Recorder] Max duration reached — stopping');
-        this.onSilence?.();
-      }
-    }, 60_000);
-
-    return true;
   }
 
-  /**
-   * Stop recording and return the audio Blob.
-   * @returns {Promise<Blob|null>}
-   */
+  // ── Stop / Cancel ────────────────────────────────────────────────
+
   stop() {
     return new Promise(resolve => {
-      if (!this.mediaRecorder) { resolve(null); return; }
+      // Stop Web Speech
+      const srText = this._browserSTT.stop();
 
-      this.mediaRecorder.onstop = () => {
-        const blob = new Blob(this.chunks, { type: 'audio/webm' });
+      if (this.mediaRecorder) {
+        this.mediaRecorder.onstop = () => {
+          const blob = new Blob(this.chunks, { type: 'audio/webm' });
+          this._cleanup();
+          // Prefer Web Speech result; use blob only if needed
+          resolve({ blob, srText: srText || null });
+        };
+        this.mediaRecorder.stop();
+      } else {
         this._cleanup();
-        resolve(blob);
-      };
-
-      this.mediaRecorder.stop();
+        resolve({ blob: null, srText: srText || null });
+      }
     });
   }
 
   cancel() {
-    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+    this._browserSTT.abort();
+    if (this.mediaRecorder?.state === 'recording') {
       this.mediaRecorder.stop();
     }
     this._cleanup();
@@ -104,19 +167,25 @@ export class AudioRecorder {
 
   _cleanup() {
     this.isRecording = false;
+    this._srActive = false;
     this._stopWaveform();
     clearTimeout(this.silenceTimer);
     clearTimeout(this.maxDurTimer);
     if (this.audioContext) { this.audioContext.close(); this.audioContext = null; }
-    if (this.stream)       { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
-    this.analyser    = null;
+    if (this.stream) {
+      this.stream.getTracks().forEach(t => t.stop());
+      this.stream = null;
+    }
+    this.analyser     = null;
     this.mediaRecorder = null;
   }
+
+  // ── Silence detection ────────────────────────────────────────────
 
   _resetSilenceTimer() {
     clearTimeout(this.silenceTimer);
     this.silenceTimer = setTimeout(() => {
-      if (this.isRecording && this.onSilence) this.onSilence();
+      if (this.isRecording && !this._srActive) this.onSilence?.();
     }, 3_000);
   }
 
@@ -134,6 +203,8 @@ export class AudioRecorder {
     return rms;
   }
 
+  // ── Waveform ─────────────────────────────────────────────────────
+
   _startWaveform() {
     const draw = () => {
       if (!this.isRecording) return;
@@ -148,11 +219,11 @@ export class AudioRecorder {
       const baseRadius = Math.min(w, h) * 0.35;
 
       for (let i = 0; i < bars; i++) {
-        const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
-        const barH  = level * 40 * (0.5 + Math.sin(Date.now() * 0.005 + i) * 0.5);
-        const r     = baseRadius + barH;
-        const x     = cx + Math.cos(angle) * r;
-        const y     = cy + Math.sin(angle) * r;
+        const angle  = (i / bars) * Math.PI * 2 - Math.PI / 2;
+        const barH   = level * 40 * (0.5 + Math.sin(Date.now() * 0.005 + i) * 0.5);
+        const r      = baseRadius + barH;
+        const x      = cx + Math.cos(angle) * r;
+        const y      = cy + Math.sin(angle) * r;
 
         this.ctx.beginPath();
         this.ctx.arc(x, y, 3, 0, Math.PI * 2);

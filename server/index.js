@@ -51,21 +51,29 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => res.redirect('/index.html'));
 
 // HTTPS server — graceful startup even if certs are missing
+// ── HTTP vs HTTPS ──────────────────────────────────────────────────────────────
+// Set HTTP_ONLY=1 env var to disable HTTPS (for local dev without certs)
+const FORCE_HTTP = process.env.HTTP_ONLY !== '0';
+
 let server;
-try {
-  server = https.createServer({
-    key:  fs.readFileSync(path.join(__dirname, 'certs/server.key')),
-    cert: fs.readFileSync(path.join(__dirname, 'certs/server.crt')),
-  }, app);
-} catch (err) {
-  console.warn('[VoiceAssistant] HTTPS certs not found — falling back to HTTP');
-  console.warn('[VoiceAssistant] For production, place server.key / server.crt in server/certs/');
+if (!FORCE_HTTP) {
+  try {
+    server = https.createServer({
+      key:  fs.readFileSync(path.join(__dirname, 'certs/server.key')),
+      cert: fs.readFileSync(path.join(__dirname, 'certs/server.crt')),
+    }, app);
+  } catch (err) {
+    console.warn('[VoiceAssistant] HTTPS certs load failed — falling back to HTTP');
+    console.warn('[VoiceAssistant] For HTTPS, place server.key / server.crt in server/certs/');
+    server = http.createServer(app);
+  }
+} else {
   server = http.createServer(app);
 }
 
 server.listen(PORT, '0.0.0.0', () => {
   const addr = server.address();
-  const proto = addr.family === 'IPv6' ? 'http' : 'http';
-  console.log(`[VoiceAssistant] running at http://0.0.0.0:${PORT}`);
+  const proto = server instanceof https.Server ? 'https' : 'http';
+  console.log(`[VoiceAssistant] running at ${proto}://0.0.0.0:${PORT}`);
   console.log('[VoiceAssistant] ARK key loaded:', !!process.env.ARK_API_KEY);
 });
