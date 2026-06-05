@@ -1,7 +1,3 @@
-const ARK_ENDPOINT = process.env.ARK_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
-const ARK_MODEL   = process.env.ARK_MODEL    || 'doubao-seed-1-8-251228';
-const ARK_API_KEY = process.env.ARK_API_KEY;
-
 const TIMEOUT_MS = 15_000; // 15s — prevents backend hanging
 
 const SYSTEM_PROMPT = `你是一个温暖、聪明、口语化的AI语音助手。请用自然、简洁的方式回答，就像朋友聊天一样。每条回复控制在100字以内。
@@ -13,6 +9,10 @@ const SYSTEM_PROMPT = `你是一个温暖、聪明、口语化的AI语音助手�
  * @returns {Promise<string>} AI reply text
  */
 export async function chat(text) {
+  const ARK_API_KEY   = process.env.ARK_API_KEY;
+  const ARK_ENDPOINT  = process.env.ARK_ENDPOINT || 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
+  const ARK_MODEL     = process.env.ARK_MODEL    || 'doubao-seed-1-8-251228';
+
   if (!ARK_API_KEY) {
     throw new Error('ARK_API_KEY environment variable is not set');
   }

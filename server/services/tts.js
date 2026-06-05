@@ -16,8 +16,6 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 // Clean up old files on startup
 cleanupOldFiles();
 
-const TTS_ENDPOINT = process.env.TTS_ENDPOINT || 'https://openspeech.bytedance.com/api/v1/tts';
-const TTS_API_KEY  = process.env.TTS_API_KEY;
 const TIMEOUT_MS   = 10_000;
 
 /**
@@ -25,6 +23,9 @@ const TIMEOUT_MS   = 10_000;
  * Returns the public URL of the saved audio file, or null if unavailable.
  */
 export async function textToSpeech(text, voiceSpeed = 1.0) {
+  const TTS_API_KEY  = process.env.TTS_API_KEY;
+  const TTS_ENDPOINT = process.env.TTS_ENDPOINT || 'https://openspeech.bytedance.com/api/v1/tts';
+
   if (!TTS_API_KEY) {
     console.warn('[TTS] TTS_API_KEY not configured — skipping server TTS');
     return null;
