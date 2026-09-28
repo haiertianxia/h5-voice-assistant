@@ -98,8 +98,12 @@
 - **错误处理**: 麦克风权限拒绝 → 显示引导开启权限的提示
 
 ### 4.2 语音识别 (STT)
-- 优先使用浏览器 Web Speech API (`SpeechRecognition`)
-- 备用: 发送音频到后端 `/api/stt` 处理
+✅ **已完成** — 双通道实现:
+- **主通道**: 浏览器 Web Speech API (`SpeechRecognition`)，实时显示识别文字
+- **备用通道**: `POST /api/stt` → AssemblyAI API（后端: `server/routes/stt.js`）
+  - 上传音频 → 发起转录 → 轮询结果 → 返回 `{ text }`
+  - 支持中文（`language_code: 'zh'`），`universal` 语音模型
+  - 限时 30s 轮询，超时返回 504
 - 识别结果实时显示在用户气泡中（类似打字效果）
 
 ### 4.3 LLM 处理
@@ -110,6 +114,12 @@
 - 错误时: orb 抖动 + 显示错误消息
 
 ### 4.4 语音回复 (TTS)
+✅ **已完成** — ByteDance TTS 集成:
+- 路由: `POST /api/tts` → 调用 `server/services/tts.js` 的 `textToSpeech()`
+- 流程: 接收文本 → 请求 `https://openspeech.bytedance.com/api/v1/tts` → 保存为 MP3 文件 → 返回 `/uploads/{uuid}.mp3` 供前端播放
+- 参数: 支持语速调节（`voiceSpeed: 0.5~2.0`）、语音选择（默认 `zh_female_shanbai_bigtts`）
+- 降级: 当 `TTS_API_KEY` 未配置时返回 `null`，前端 `useWebSpeech` 标记触发浏览器 Web Speech Synthesis
+- 老化清理: `/uploads/` 中超过 1 小时的 MP3 文件自动删除
 - AI 回复文字同时:
   1. 文字区开始逐字打字机动画
   2. 自动播放返回的音频（若 `audioUrl` 存在）
@@ -186,14 +196,28 @@
 - `dotenv` — 环境变量
 
 ### TTS 方案
-优先使用 **Volcengine TTS API**（与 ARK 模型同体系），备用 CosyVoice 或 OpenAI TTS。
+✅ **已完成** — 使用 **ByteDance TTS API**（https://openspeech.bytedance.com/api/v1/tts）。
+- 服务端: `server/services/tts.js` — `textToSpeech()` 函数
+- 路由: `server/routes/tts.js` — `POST /api/tts` → `{ audioUrl }`
+- 降级: 未配置 `TTS_API_KEY` 时返回 `{ useWebSpeech: true }`，前端切换至浏览器 Web Speech Synthesis
 
 ### 环境变量
 ```
+# ARK API (Volcengine) — Required
 ARK_API_KEY=xxx
-ARK_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/
+ARK_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+ARK_MODEL=doubao-seed-1-8-251228
+
+# TTS (ByteDance) — Optional
 TTS_API_KEY=xxx
-TTS_ENDPOINT=xxx
+TTS_ENDPOINT=https://openspeech.bytedance.com/api/v1/tts
+TTS_APPID=xxx
+TTS_VOICE=zh_female_shanbai_bigtts
+
+# STT (AssemblyAI) — Optional
+ASSEMBLYAI_API_KEY=xxx
+
+# Server
 PORT=3000
 ```
 
@@ -210,7 +234,8 @@ h5-voice-assistant/
 │   ├── index.js          # Express 入口
 │   ├── routes/
 │   │   ├── chat.js       # /api/chat
-│   │   └── tts.js        # /api/tts
+│   │   ├── tts.js        # /api/tts
+│   │   └── stt.js        # /api/stt
 │   ├── services/
 │   │   ├── ark.js        # ARK 大模型调用
 │   │   └── tts.js        # TTS 调用
